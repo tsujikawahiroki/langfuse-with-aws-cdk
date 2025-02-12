@@ -26,6 +26,8 @@ export interface WorkerProps {
 }
 
 export class Worker extends Construct {
+  public readonly service: ecs.FargateService;
+
   constructor(scope: Construct, id: string, props: WorkerProps) {
     super(scope, id);
 
@@ -42,7 +44,7 @@ export class Worker extends Construct {
       database,
       cache,
       clickhouse,
-      bucket,
+      bucket
     } = props;
 
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'TaskDefinition', {
@@ -97,7 +99,7 @@ export class Worker extends Construct {
 
     bucket.grantReadWrite(taskDefinition.taskRole);
 
-    const service = new ecs.FargateService(this, 'Service', {
+    this.service = new ecs.FargateService(this, 'Service', {
       cluster,
       taskDefinition: taskDefinition,
       serviceConnectConfiguration: {
@@ -106,23 +108,21 @@ export class Worker extends Construct {
         }),
       },
       enableExecuteCommand: true,
-      capacityProviderStrategies: enableFargateSpot
-        ? [
-            {
-              capacityProvider: 'FARGATE',
-              weight: 0,
-            },
-            {
-              capacityProvider: 'FARGATE_SPOT',
-              weight: 1,
-            },
-          ]
-        : undefined,
+      capacityProviderStrategies: enableFargateSpot ? [
+        {
+          capacityProvider: 'FARGATE',
+          weight: 0,
+        },
+        {
+          capacityProvider: 'FARGATE_SPOT',
+          weight: 1,
+        },
+      ] : undefined,
     });
 
-    service.connections.allowToDefaultPort(database);
-    service.connections.allowToDefaultPort(cache);
-    service.connections.allowToDefaultPort(clickhouse);
-    service.connections.allowTo(clickhouse, ec2.Port.tcp(9000));
+    this.service.connections.allowToDefaultPort(database);
+    this.service.connections.allowToDefaultPort(cache);
+    this.service.connections.allowToDefaultPort(clickhouse);
+    this.service.connections.allowTo(clickhouse, ec2.Port.tcp(9000));
   }
 }

@@ -12,6 +12,7 @@ import { Cache } from './constructs/cache';
 import { ClickHouse } from './constructs/services/clickhouse';
 import { LOG_LEVEL, StackConfig, getStackConfig } from './stack-config';
 import { Bastion } from './constructs/bastion';
+import { Scheduler } from './constructs/scheduler';
 
 export interface LangfuseWithAwsCdkStackProps extends cdk.StackProps {
   envName: string;
@@ -23,15 +24,15 @@ export class LangfuseWithAwsCdkStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: LangfuseWithAwsCdkStackProps) {
     super(scope, id, props);
 
-    const { envName, hostName, domainName } = props;
+    const { env, envName, hostName, domainName } = props;
 
     /**
      * Configurations
      */
     const stackConfig: StackConfig = getStackConfig(envName);
 
-    const allowedIPv4Cidrs = stackConfig.allowedIPv4Cidrs ?? ['0.0.0.0/0'];
-    const allowedIPv6Cidrs = stackConfig.allowedIPv6Cidrs ?? ['::/0'];
+    const allowedIPv4Cidrs = stackConfig.allowedIPv4Cidrs ?? ['40.81.207.252/32']; // TODO Cognito対応完了次第、戻す
+    // const allowedIPv6Cidrs = stackConfig.allowedIPv6Cidrs ?? ['::/0']; // TODO Cognito対応完了次第、戻す
     const langfuseImageTag = stackConfig.langfuseImageTag ?? 'latest';
     const clickhouseImageTag = stackConfig.clickhouseImageTag ?? 'latest';
     const langfuseLogLvel = stackConfig.langfuseLogLevel ?? LOG_LEVEL.INFO;
@@ -141,7 +142,7 @@ export class LangfuseWithAwsCdkStack extends cdk.Stack {
       domainName: domainName,
       vpc,
       allowedIPv4Cidrs,
-      allowedIPv6Cidrs,
+      // allowedIPv6Cidrs, // TODO Cognito対応完了次第、戻す
       cluster,
       enableFargateSpot: stackConfig.enableFargateSpot,
       taskDefCpu: stackConfig.taskDefCpu,
@@ -155,12 +156,13 @@ export class LangfuseWithAwsCdkStack extends cdk.Stack {
       cache,
       clickhouse,
       bucket: langfuseBucket,
+      env: env!,
     });
 
     /**
      * Fargate Service (Langfuse Worker)
      */
-    new Worker(this, 'Worker', {
+    const worker = new Worker(this, 'Worker', {
       cluster,
       enableFargateSpot: stackConfig.enableFargateSpot,
       taskDefCpu: stackConfig.taskDefCpu,
@@ -178,12 +180,22 @@ export class LangfuseWithAwsCdkStack extends cdk.Stack {
     /**
      * Bastion
      */
+    let bastion;
     if (stackConfig.createBastion) {
-      new Bastion(this, 'Bastion', {
+      bastion = new Bastion(this, 'Bastion', {
         vpc,
         database,
       });
     }
+
+    new Scheduler(this, 'Scheduler', {
+      env, 
+      bastion, 
+      clickhouse, 
+      web, 
+      worker
+      }
+    );
 
     /**
      * Outputs

@@ -7,7 +7,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
-import { Duration, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, Environment, RemovalPolicy, SecretValue } from 'aws-cdk-lib';
 import { Cache } from '../cache';
 import { Database } from '../database';
 import { ClickHouse } from './clickhouse';
@@ -19,7 +19,7 @@ export interface WebProps {
 
   vpc: ec2.IVpc;
   allowedIPv4Cidrs: string[];
-  allowedIPv6Cidrs: string[];
+  // allowedIPv6Cidrs: string[];
 
   cluster: ecs.ICluster;
   enableFargateSpot?: boolean;
@@ -35,10 +35,12 @@ export interface WebProps {
   cache: Cache;
   clickhouse: ClickHouse;
   bucket: s3.IBucket;
+  env: Environment;
 }
 
 export class Web extends Construct {
   public readonly url: string;
+  public readonly service: ecs.FargateService;
 
   constructor(scope: Construct, id: string, props: WebProps) {
     super(scope, id);
@@ -47,7 +49,7 @@ export class Web extends Construct {
       hostName,
       domainName,
       allowedIPv4Cidrs,
-      allowedIPv6Cidrs,
+      // allowedIPv6Cidrs,
 
       vpc,
       cluster,
@@ -64,6 +66,7 @@ export class Web extends Construct {
       cache,
       clickhouse,
       bucket,
+      env,
     } = props;
 
     /**
@@ -75,9 +78,9 @@ export class Web extends Construct {
 
     const certificate = hostedZone
       ? new acm.Certificate(this, 'Certificate', {
-          domainName: `${hostName}.${hostedZone.zoneName}`,
-          validation: acm.CertificateValidation.fromDns(hostedZone),
-        })
+        domainName: `${hostName}.${hostedZone.zoneName}`,
+        validation: acm.CertificateValidation.fromDns(hostedZone),
+      })
       : undefined;
 
     const alb = new elbv2.ApplicationLoadBalancer(this, 'ApplicationLoadBalancer', {
@@ -100,7 +103,7 @@ export class Web extends Construct {
     });
 
     allowedIPv4Cidrs.forEach(cidr => listener.connections.allowDefaultPortFrom(ec2.Peer.ipv4(cidr)));
-    allowedIPv6Cidrs.forEach(cidr => listener.connections.allowDefaultPortFrom(ec2.Peer.ipv6(cidr)));
+    // allowedIPv6Cidrs.forEach(cidr => listener.connections.allowDefaultPortFrom(ec2.Peer.ipv6(cidr)));
 
     if (hostedZone) {
       new route53.ARecord(this, 'AliasRecord', {
@@ -129,6 +132,22 @@ export class Web extends Construct {
       },
     });
 
+    const authCognitoClientId = new secretsmanager.Secret(this, 'AuthCognitoClientId', {
+      secretStringValue: SecretValue.unsafePlainText(
+        `xxx`,
+      ),
+    });
+    const authCognitoClientSecret = new secretsmanager.Secret(this, 'AuthCognitoClientSecret', {
+      secretStringValue: SecretValue.unsafePlainText(
+        `xxx`,
+      ),
+    });
+    const authCognitoIssuer = new secretsmanager.Secret(this, 'AuthCognitoIssuer', {
+      secretStringValue: SecretValue.unsafePlainText(
+        `https://cognito-idp.${env.region}.amazonaws.com/<PoolId>`,
+      ),
+    });
+
     taskDefinition.addContainer('Container', {
       image: ecs.ContainerImage.fromRegistry(`langfuse/langfuse:${imageTag}`),
       portMappings: [{ containerPort: 3000, name: 'web' }],
@@ -153,6 +172,9 @@ export class Web extends Construct {
         LANGFUSE_S3_EVENT_UPLOAD_PREFIX: 'events/',
         LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: bucket.bucketName,
         LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: 'media/',
+        AUTH_DISABLE_SIGNUP: 'true', // 新規ユーザのサインアップ無効
+        AUTH_DISABLE_USERNAME_PASSWORD: 'true', // メール/パスワード認証を無効
+        // AUTH_COGNITO_ALLOW_ACCOUNT_LINKING: 'true'
       },
       secrets: {
         NEXTAUTH_SECRET: ecs.Secret.fromSecretsManager(nextAuthSecret),
@@ -166,6 +188,10 @@ export class Web extends Construct {
         REDIS_CONNECTION_STRING: ecs.Secret.fromSecretsManager(cache.connectionStringSecret),
 
         CLICKHOUSE_PASSWORD: ecs.Secret.fromSecretsManager(clickhouse.clickhousePassword),
+
+        AUTH_COGNITO_CLIENT_ID: ecs.Secret.fromSecretsManager(authCognitoClientId),
+        AUTH_COGNITO_CLIENT_SECRET: ecs.Secret.fromSecretsManager(authCognitoClientSecret),
+        AUTH_COGNITO_ISSUER: ecs.Secret.fromSecretsManager(authCognitoIssuer),
       },
       healthCheck: {
         command: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1'],
@@ -178,7 +204,7 @@ export class Web extends Construct {
 
     bucket.grantReadWrite(taskDefinition.taskRole);
 
-    const service = new ecs.FargateService(this, 'Service', {
+    this.service = new ecs.FargateService(this, 'Service', {
       cluster,
       taskDefinition: taskDefinition,
       serviceConnectConfiguration: {
@@ -187,29 +213,27 @@ export class Web extends Construct {
         }),
       },
       enableExecuteCommand: true,
-      capacityProviderStrategies: enableFargateSpot
-        ? [
-            {
-              capacityProvider: 'FARGATE',
-              weight: 0,
-            },
-            {
-              capacityProvider: 'FARGATE_SPOT',
-              weight: 1,
-            },
-          ]
-        : undefined,
+      capacityProviderStrategies: enableFargateSpot ? [
+        {
+          capacityProvider: 'FARGATE',
+          weight: 0,
+        },
+        {
+          capacityProvider: 'FARGATE_SPOT',
+          weight: 1,
+        },
+      ] : undefined,
       desiredCount: langfuseWebTaskCount,
     });
 
-    service.connections.allowToDefaultPort(database);
-    service.connections.allowToDefaultPort(cache);
-    service.connections.allowToDefaultPort(clickhouse);
-    service.connections.allowTo(clickhouse, ec2.Port.tcp(9000));
+    this.service.connections.allowToDefaultPort(database);
+    this.service.connections.allowToDefaultPort(cache);
+    this.service.connections.allowToDefaultPort(clickhouse);
+    this.service.connections.allowTo(clickhouse, ec2.Port.tcp(9000));
 
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'TargetGroup', {
       vpc,
-      targets: [service],
+      targets: [this.service],
       protocol: elbv2.ApplicationProtocol.HTTP,
       port: 3000,
       deregistrationDelay: Duration.seconds(10),

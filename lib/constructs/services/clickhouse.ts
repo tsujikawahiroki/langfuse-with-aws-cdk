@@ -21,11 +21,13 @@ export class ClickHouse extends Construct implements ec2.IConnectable {
   public readonly clickhousePassword: secretsmanager.ISecret;
   public readonly connections: ec2.Connections;
   public readonly port = 8123;
+  public readonly service: ecs.FargateService;
 
   constructor(scope: Construct, id: string, props: ClickHouseProps) {
     super(scope, id);
 
     const { vpc, cluster, enableFargateSpot, taskDefCpu, taskDefMemoryLimitMiB, imageTag } = props;
+
 
     const fileSystem = new efs.FileSystem(this, 'EfsFileSystem', {
       vpc: vpc,
@@ -115,7 +117,7 @@ export class ClickHouse extends Construct implements ec2.IConnectable {
       vpc,
     });
 
-    const service = new ecs.FargateService(this, 'Service', {
+    this.service = new ecs.FargateService(this, 'Service', {
       cluster,
       taskDefinition: taskDefinition,
       serviceConnectConfiguration: {
@@ -137,19 +139,19 @@ export class ClickHouse extends Construct implements ec2.IConnectable {
       securityGroups: [securityGroup],
       capacityProviderStrategies: enableFargateSpot
         ? [
-            {
-              capacityProvider: 'FARGATE',
-              weight: 0,
-            },
-            {
-              capacityProvider: 'FARGATE_SPOT',
-              weight: 1,
-            },
-          ]
-        : undefined,
+          {
+            capacityProvider: 'FARGATE',
+            weight: 0,
+          },
+          {
+            capacityProvider: 'FARGATE_SPOT',
+            weight: 1,
+          },
+        ]
+      : undefined,
     });
 
-    fileSystem.connections.allowDefaultPortFrom(service.connections);
+    fileSystem.connections.allowDefaultPortFrom(this.service.connections);
 
     this.connections = new ec2.Connections({ securityGroups: [securityGroup], defaultPort: ec2.Port.tcp(this.port) });
   }

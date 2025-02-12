@@ -9,12 +9,14 @@ export interface BastionProps {
 }
 
 export class Bastion extends Construct {
+  public readonly host: ec2.BastionHostLinux;
+
   constructor(scope: Construct, id: string, props: BastionProps) {
     super(scope, id);
 
     const { vpc, database } = props;
 
-    const host = new ec2.BastionHostLinux(this, 'BastionHost', {
+    this.host = new ec2.BastionHostLinux(this, 'BastionHost', {
       vpc,
       machineImage: ec2.MachineImage.latestAmazonLinux2023({ cpuType: ec2.AmazonLinuxCpuType.ARM_64 }),
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.NANO),
@@ -30,7 +32,7 @@ export class Bastion extends Construct {
 
     new CfnOutput(this, 'PortForwardCommand', {
       value: `aws ssm start-session --region ${Stack.of(this).region} --target ${
-        host.instanceId
+        this.host.instanceId
       } --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{"portNumber":["${
         database.cluster.clusterEndpoint.port
       }"], "localPortNumber":["${database.cluster.clusterEndpoint.port}"], "host": ["${database.cluster.clusterEndpoint.hostname}"]}'`,
